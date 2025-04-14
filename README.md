@@ -65,7 +65,7 @@ The expected performance is:
 
 Training and validation took 1 hour and 40 minutes. 
 
-## Data augmentation via generated captions.
+## Data augmentation via generated captions
 Another experiment enables TAP along with LLM generated captions. It utilizes the Phi-4 language model which was run locally via [Ollama](https://ollama.com/).
 Corresponding prompt and script are provided in ```experiments/generate_captions_phi4.py```. LLM enhanced development captions are located in ```clotho_v2/clotho_captions_development_plus_phi_generated.csv```
 
