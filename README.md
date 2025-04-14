@@ -1,6 +1,6 @@
 
 This repository builds upon [salsa](https://github.com/OptimusPrimus/salsa) [[1]](#1) repository and contains the implementation to run and reproduce the results of two main successful experiments:
-Text Aware Attention Pooling (TAP) and Overcaptioning. The experiments focused on stage 1 training using Clotho dataset. All runs were conducted on a single NVIDIA RTX4090
+Text Aware Attention Pooling (TAP) and Overcaptioning. The experiments focused on stage 1 training using Clotho dataset. All runs were conducted on a single NVIDIA RTX4090.
 
 
 ## Setting up the environment
