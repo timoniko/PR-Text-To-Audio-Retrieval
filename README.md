@@ -4,7 +4,7 @@ Text Aware Attention Pooling (TAP) and Overcaptioning. The experiments focused o
 
 
 ## Setting up the environment
-To set up the environment, refer to [original repo](https://github.com/OptimusPrimus/salsa) and follow the instruction of the corresponding section,but with updated  ```environment.yaml``` file. 
+To set up the environment, refer to [original repo](https://github.com/OptimusPrimus/salsa) and follow the instruction of the corresponding section, but with updated  ```environment.yaml``` file. 
 
 ## Baseline Run
 
