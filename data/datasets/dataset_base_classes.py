@@ -73,7 +73,7 @@ class LoadAudios:
         filename = f'{ds_name}_{self.sample_rate}.hdf' if self.compress else f'{ds_name}_{self.sample_rate}_wav.hdf'
         file_path = os.path.join(get_persistent_cache_dir(), filename)
 
-        unique_paths = sorted(list(set([p for p in paths])))
+        unique_paths = sorted(list(set([p.strip() for p in paths])))
         print(f"trying to load {len(unique_paths)} files from {file_path}")
         if not os.path.exists(file_path):
             # compress and load files
