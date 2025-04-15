@@ -35,7 +35,6 @@ from nltk.corpus import stopwords
 
 from hflayers import Hopfield
 
-from experiments.exp_utils import target_matrix_mix
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
