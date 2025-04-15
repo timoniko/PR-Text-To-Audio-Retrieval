@@ -4,7 +4,7 @@ Text Aware Attention Pooling (TAP) and Overcaptioning. The experiments focused o
 
 
 ## Setting up the environment
-To set up the environment, refer to [original repo](https://github.com/OptimusPrimus/salsa) and follow the instruction of the corresponding section, but with updated  ```environment.yaml``` file. 
+To set up the environment, refer to [original repo](https://github.com/OptimusPrimus/salsa) and follow the instruction of the corresponding section, but with updated  ```environment.yml``` file. 
 
 ## Baseline Run
 
@@ -57,7 +57,7 @@ audio_features.segment_length=5 \
 audio_features.hop_length=5
 ```
 
-The expected performance is: 
+The expected performance should improve to: 
 
 | map@10 |  R@1  |  R@5  | R@10  |
 |:------:|:-----:|:-----:|:-----:|
@@ -66,7 +66,7 @@ The expected performance is:
 Training and validation took 1 hour and 40 minutes. 
 
 ## Data augmentation via generated captions
-Another experiment enables TAP along with LLM generated captions. It utilizes the Phi-4 language model which was run locally via [Ollama](https://ollama.com/).
+Another experiment enables TAP along with LLM generated captions. It utilizes the Phi-4 language model which was deployed locally via [Ollama](https://ollama.com/).
 Corresponding prompt and script are provided in ```experiments/generate_captions_phi4.py```. LLM enhanced development captions are located in ```clotho_v2/clotho_captions_development_plus_phi_generated.csv```
 
 To execute the experiment, run the command:
@@ -91,7 +91,7 @@ audio_features.hop_length=5
 clotho_v2.add_phi4_captions=True
 ```
 
-The expected performance is: 
+The expected performance should improve to: 
 
 | map@10 |  R@1  |  R@5  | R@10  |
 |:------:|:-----:|:-----:|:-----:|
