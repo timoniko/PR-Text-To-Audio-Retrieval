@@ -53,7 +53,7 @@ More formally, authors write $z_{a \mid t} = \psi(c_a \mid t),$ where
 - **$\psi$** : text aware attention module 
 - **$z_{a \mid t}$** : text aware aggregated audio embedding of shape `[B, 1, D]`
 - **$c_a$** : audio embedding of shape `[B, T, D]`
-- **$t$** : text embedding of shape `[B, T, D]`
+- **$t$** : text embedding of shape `[B, 1, D]`
 
 To execute the experiment, run the command:
 
