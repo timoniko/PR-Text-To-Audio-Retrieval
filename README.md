@@ -33,7 +33,27 @@ The expected performance is:
 Training and validation took 3 hours and 52 minutes.
 
 ## Text Aware Attention Pooling
-Instead of mean pooling over audio frames, it is proposed in [[2]](#2) to allow model to attend to the most relevant frames to a provided text.
+
+During data processing, text and audio encoders produce an embedding of shape `[B, T, D]` for each audio and text, where
+
+- **B**: batch size  
+- **T**: number of tokens  
+- **D**: feature dimension
+
+For similarity calculation, tokens are aggrehated to get the shape '[B, 1, D]'. In baseline this is done by mean pooling.
+
+It is proposed in [[2]](#2) to allow model to attend to the most relevant frames to a provided text by conditioning text-aware attention module on a text.
+
+
+<p align="center">
+  <img src="tap.png" alt="Alt text" width="500"/>
+</p>
+
+More formally, authors write $z_{a \mid t} = \psi(c_a \mid t),$ where
+- **$\psi$** : text aware attention module 
+- **$z_{a \mid t}$** : text aware aggregated audio embedding of shape `[B, 1, D]`
+- **$c_a$** : audio embedding of shape `[B, T, D]`
+- **$t$** : text embedding of shape `[B, T, D]`
 
 To execute the experiment, run the command:
 
@@ -91,7 +111,7 @@ audio_features.hop_length=5
 clotho_v2.add_phi4_captions=True
 ```
 
-The expected performance should improve to: 
+The expected performance should now be: 
 
 | map@10 |  R@1  |  R@5  | R@10  |
 |:------:|:-----:|:-----:|:-----:|
