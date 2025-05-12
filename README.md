@@ -40,7 +40,7 @@ During data processing, text and audio encoders produce an embedding of shape `[
 - **T**: number of tokens  
 - **D**: feature dimension
 
-For similarity calculation, tokens are aggregated to get the shape '[B, 1, D]'. In baseline this is done by mean pooling.
+For similarity calculation, tokens are aggregated to get the shape `[B, 1, D]`. In baseline this is done by mean pooling.
 
 It is proposed in [[2]](#2) to allow model to attend to the most relevant frames to a provided text by conditioning text-aware attention module on a text.
 
