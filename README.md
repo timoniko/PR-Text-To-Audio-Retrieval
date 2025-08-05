@@ -55,6 +55,9 @@ More formally, authors write $z_{a \mid t} = \psi(c_a \mid t),$ where
 - **$c_a$** : audio embedding of shape `[B, T, D]`
 - **$t$** : (mean) aggregated text embedding of shape `[B, 1, D]`
 
+## Experiments
+Two main experiments enable this modue with PaSST and ATST audio encoders. 
+### PaSST
 To execute the experiment, run the command:
 
 ```
@@ -85,7 +88,7 @@ The expected performance should improve to:
 
 Training and validation took 1 hour and 40 minutes. 
 
-## Data augmentation via generated captions
+#### Data augmentation via generated captions
 Another experiment enables TAP along with LLM generated captions. It utilizes the Phi-4 language model which was deployed locally via [Ollama](https://ollama.com/).
 Corresponding prompt and script are provided in ```experiments/generate_captions_phi4.py```. LLM enhanced development captions are located in ```clotho_v2/clotho_captions_development_plus_phi_generated.csv```. It keeps both original captions (captions 1 to 5) and generated ones (captions 6 to 10).
 
@@ -120,8 +123,44 @@ The expected performance should now be:
 Training and validation took 2 hours and 55 minutes. 
 
 
+## ATST
+
+To execute the experiment, run the command:
+
+```
+CUDA_VISIBLE_DEVICES=0 python -m experiments.ex_dcase24 with \
+data_loader.batch_size=16 \
+data_loader.batch_size_eval=16 \
+audio_features.model=atst \
+sentence_features.model=roberta-large \
+rampdown_type=cosine \
+max_epochs=20 \
+rampdown_stop=15 \
+warmup_length=1 \
+rampdown_start=1 \
+train_on=clothov2 \
+seed=7 \
+audio_features.aggregate=TAP \
+tap_hyperparams.p_dropout_weights=0.2 \
+tap_hyperparams.p_dropout_proj=0.1 \
+audio_features.segment_length=5 \
+audio_features.hop_length=5 \
+lr_audio_encoder=2e-6 \
+lr_audio_project=2e-6
+```
+
+The expected performance should be: 
+
+| map@10 |  R@1  |  R@5  | R@10  |
+|:------:|:-----:|:-----:|:-----:|
+| 38.92  | 32.32 | 47.65 | 54.52 |
+
+Training and validation took 1 hour and 38 minutes. 
+
+
 ## References
 - [1] P. Primus, F. Schmid, and G. Widmer, “Estimated Audio-Caption Correspondences Improve Language-Based Audio Retrieval“
 <a name="1"></a>
 - [2] Yifei Xin, Dongchao Yang, Yuexian Zou, “Improving Text-Audio Retrieval by Text-aware Attention Pooling and Prior Matrix Revised Loss“
 <a name="2"></a>
+
