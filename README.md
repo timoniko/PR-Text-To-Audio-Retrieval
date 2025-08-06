@@ -57,7 +57,7 @@ More formally, authors write $z_{a \mid t} = \psi(c_a \mid t),$ where
 
 ## Experiments
 Two main experiments enable this modue with PaSST and ATST audio encoders. 
-### PaSST
+### PaSST + Text-Aware Pooling
 To execute the experiment, run the command:
 
 ```
@@ -123,7 +123,7 @@ The expected performance should now be:
 Training and validation took 2 hours and 55 minutes. 
 
 
-### ATST
+### ATST + Text-Aware Pooling
 
 To execute the experiment, run the command:
 
@@ -163,5 +163,6 @@ Training and validation took 1 hour and 38 minutes.
 <a name="1"></a>
 - [2] Yifei Xin, Dongchao Yang, Yuexian Zou, “Improving Text-Audio Retrieval by Text-aware Attention Pooling and Prior Matrix Revised Loss“
 <a name="2"></a>
+
 
 
