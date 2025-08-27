@@ -58,7 +58,7 @@ def default_config():
     loss_function = 'baseline'  #cross entropy
 
     "Other options are:"
-    "1: RTL SN Sampling"
+    "1: semi-negative"
     "2: PMR"
     "3: Sigmoid Loss"
     "4: InfoNCE"
@@ -110,7 +110,7 @@ def default_config():
         'adopt_layer_size': 2048,
         'segment_length': 10,
         'hop_length': 10,
-        'aggregate': 'mean',  #can also be 'TAP' (Text Aware Pooling) or 'MultiHeadTAP'
+        'aggregate': 'mean',
         'sequence_model': {
             'num_layers': 0,
             'dim': 768,  # 3840
@@ -381,11 +381,10 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         sentence_layers = []
 
         for i, o in zip(layer_sizes[:-1], layer_sizes[1:]):
-            audio_layers.append(torch.nn.Linear(i, o))
-            audio_layers.append(torch.nn.ReLU())
+            sentence_layers.append(torch.nn.Linear(i, o))
+            sentence_layers.append(torch.nn.ReLU())
 
-        audio_layers.pop()
-
+        sentence_layers.pop()
         self.project_sentence = torch.nn.Sequential(*sentence_layers)
 
         initial_tau = torch.zeros((1,)) + self.kwargs['initial_tau']
@@ -443,13 +442,21 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.audio_embeddings = {}
         self.sentence_embeddings = {}
 
+        if self.kwargs['audio_features']['aggregate'] == 'TAP':
+            self.tap = TextAwareAttentionPooling(model_dim=self.kwargs['shared_representation_size'],
+                                                 query_dim=self.kwargs['tap_hyperparams']['dim'],
+                                                 key_dim=self.kwargs['tap_hyperparams']['dim'],
+                                                 value_dim=self.kwargs['tap_hyperparams']['dim'],
+                                                 p_dropout_weights=self.kwargs['tap_hyperparams']['p_dropout_weights'],
+                                                 p_dropout_proj=self.kwargs['tap_hyperparams']['p_dropout_proj'])
+
         if len(self.kwargs.get('distill_from', "")):
             for pt_model in self.kwargs['distill_from'].split(";"):
                 out_path = os.path.join(get_model_dir(), pt_model)
                 if not os.path.exists(out_path):
                     continue
                 if not os.path.exists(
-                        os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt')):
+                    os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt')):
                     print("embeddings do not exist")
                     # cmd_generate_embeddings(model=None, load_parameters=pt_model)
                 se = torch.load(os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt'))
@@ -465,14 +472,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         self.loss_function = kwargs['loss_function']
         self.store_predictions = True
-
-        if self.kwargs['audio_features']['aggregate'] == 'TAP':
-            self.tap = TextAwareAttentionPooling(model_dim=self.kwargs['shared_representation_size'],
-                                                 query_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                 key_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                 value_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                 p_dropout_weights=self.kwargs['tap_hyperparams']['p_dropout_weights'],
-                                                 p_dropout_proj=self.kwargs['tap_hyperparams']['p_dropout_proj'])
 
         if self.loss_function == 'Sigmoid Loss':
             self.sigmoid_loss = SigmoidLoss(init_t=self.kwargs['sigmoid_loss_args']['init_t'],
@@ -744,10 +743,10 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             self.first = False
 
         C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask)
-        C = C / torch.abs(self.tau)
-
-        C_audio = torch.log_softmax(C, dim=0)
-        C_text = torch.log_softmax(C, dim=1)
+        with torch.cuda.amp.autocast(enabled=False):
+            C = C.float() / torch.abs(self.tau.float())
+            C_audio = F.log_softmax(C, dim=0)
+            C_text = F.log_softmax(C, dim=1)
 
         assert C_audio.shape[0] == C_audio.shape[
             1], f'Audio Features Shape: {C_audio.shape} Sentence Features Shape: {C_text.shape}'
@@ -757,7 +756,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             loss = self.prior_matrix_revisited_loss(C=C,
                                                     omega=self.kwargs['pmr_omega'],
                                                     tau=self.kwargs['pmr_tau'])
-        elif self.loss_function == 'TRL SN Sampling':
+        elif self.loss_function == 'semi-negative':
             loss = self.semi_hard_triplet_ranking_loss(C)
         elif self.loss_function == 'InfoNCE':
             target_sim = target_matrix_mix(paths=batch['path']).to(self.device)
@@ -872,14 +871,13 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         with torch.cuda.amp.autocast(enabled=True):
             C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask)
+            C_ = C / torch.abs(self.tau)
 
-        C_ = C / torch.abs(self.tau)
+            C_audio = torch.log_softmax(C, dim=0)
+            C_text = torch.log_softmax(C, dim=1)
 
-        C_audio = torch.log_softmax(C, dim=0)
-        C_text = torch.log_softmax(C, dim=1)
-
-        C_audio_ = torch.log_softmax(C_, dim=0)
-        C_text_ = torch.log_softmax(C_, dim=1)
+            C_audio_ = torch.log_softmax(C_, dim=0)
+            C_text_ = torch.log_softmax(C_, dim=1)
 
         assert C_audio.shape[0] == C_audio.shape[
             1], f'Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}'
@@ -892,7 +890,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             loss_ = self.prior_matrix_revisited_loss(C=C / torch.abs(self.tau),
                                                      omega=self.kwargs['tap_pmr_args']['init_pmr_omega'],
                                                      tau=self.kwargs['tap_pmr_args']['init_pmr_tau'])
-        elif self.loss_function == 'TRL SN Sampling':
+        elif self.loss_function == 'semi-negative':
             loss = self.semi_hard_triplet_ranking_loss(C)
             loss_ = self.semi_hard_triplet_ranking_loss(C_)
         elif self.loss_function == 'InfoNCE':
@@ -1668,24 +1666,15 @@ class TextAwareAttentionPooling(torch.nn.Module):
         self.w_q = nn.Linear(in_features=model_dim, out_features=query_dim)
         self.w_k = nn.Linear(in_features=model_dim, out_features=key_dim)
         self.w_v = nn.Linear(in_features=model_dim, out_features=value_dim)
+
         self.w_0 = nn.Linear(in_features=query_dim, out_features=model_dim)
 
         self.layer_norm = torch.nn.LayerNorm(normalized_shape=model_dim)
-        # self.layer_norm2 = torch.nn.LayerNorm(normalized_shape=model_dim)
-
-        self.softmax = torch.nn.Softmax(dim=-1)
 
     def forward(self, x_audio, x_text, is_training: bool):
         q_t = self.w_q(self.layer_norm(x_text))  # [B, 1, query_dim]
         k_a = self.w_k(self.layer_norm(x_audio))  # [B, T_audio, key_dim]
         v_a = self.w_v(self.layer_norm(x_audio))  # [B, T_audio, value_dim]
-
-        # attn_scores = torch.bmm(q_t, k_a.transpose(1, 2))
-        # attn_scores = attn_scores / math.sqrt(self.query_dim)
-        # attn_probs = self.softmax(attn_scores)
-        # attn_probs = torch.nn.functional.dropout(attn_probs, p=self.dropout_prob, training=is_training)
-        #
-        # dot_product_attention = torch.bmm(attn_probs, v_a)  # => [B, 1, value_dim]
 
         dot_product_attention = F.scaled_dot_product_attention(q_t, k_a, v_a,
                                                                dropout_p=self.p_dropout_weights if is_training else 0)
@@ -1693,7 +1682,6 @@ class TextAwareAttentionPooling(torch.nn.Module):
         z = F.dropout(z, p=self.p_dropout_proj, training=is_training)
 
         return z
-
 
 if __name__ == '__main__':
     # set DDP=2 forks two processes to run on two GPUs

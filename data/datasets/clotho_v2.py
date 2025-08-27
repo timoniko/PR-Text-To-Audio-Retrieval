@@ -7,7 +7,7 @@ from utils.directories import directories, get_dataset_dir
 from data.datasets.dataset_base_classes import audio_dataset, DatasetBaseClass, ConcatDataset
 from audiomentations import Compose, AddGaussianNoise, TimeStretch, PitchShift, Shift, Gain
 
-SPLITS = ['development', 'validation', 'evaluation', 'development_mix']
+SPLITS = ['development', 'validation', 'evaluation']
 
 clotho_v2 = Ingredient('clotho_v2', ingredients=[directories, audio_dataset])
 
@@ -31,15 +31,7 @@ def get_clotho_v2(split, folder_name, compress, add_mixed_audios,
                   add_phi4_captions, add_gpt4_captions, augment_waveform):
 
     splits = {'train': 'development', 'val': 'validation', 'test': 'evaluation'}
-
-    ds1 = Clotho_v2Dataset(splits[split])
-
-    if add_mixed_audios and split == 'train':
-        ds2 = Clotho_v2Dataset('development_mix')
-        ds = ConcatDataset([ds1, ds2])
-    else:
-        ds = ds1
-
+    ds = Clotho_v2Dataset(splits[split])
     return ds
 
 
