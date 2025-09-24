@@ -20,8 +20,6 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 import torch
 from glob import glob
 from pytorch_lightning.loggers import WandbLogger
-
-from experiments.cloob_method import infoLOOB_loss, cloob
 from utils.directories import directories, get_model_dir, get_dataset_dir
 import numpy as np
 import torch.distributed as dist
@@ -29,13 +27,9 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 import string
-
-import nltk
 from nltk.corpus import stopwords
 
-from hflayers import Hopfield
-
-from experiments.exp_utils import target_matrix_mix
+from sentence_transformers import SentenceTransformer
 
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
@@ -55,18 +49,13 @@ audio_retrieval = Experiment('audio_retrieval', ingredients=[
 
 @audio_retrieval.config
 def default_config():
-    loss_function = 'baseline'  #cross entropy
+    loss_function = 'nt-xent'  #cross entropy
 
     "Other options are:"
     "1: semi-negative"
     "2: PMR"
     "3: Sigmoid Loss"
     "4: InfoNCE"
-    "5: SoftInfoNCE"
-    "6: CLOOB"
-
-    pmr_tau = 1
-    pmr_omega = 1
 
     tap_pmr_args = {'init_pmr_omega': 0.5,
                     'init_pmr_tau': 0.07,
@@ -76,16 +65,6 @@ def default_config():
                          'lr_sigmoid_b': 1e-1,
                          'init_t': 1,
                          'init_b': -10}
-
-    cloob_args = {'init_inv_tau': 14.3,
-                  'learnable_inv_tau': True,
-                  'scale-hopfield': 8.0,
-                  'lr_cloob': 2e-5}
-
-    soft_info_nce_args = {'weight_kl': 1.3,
-                          'weight_unif': 0.7,
-                          't': 1,
-                          'pretrained_model_path': 'model_checkpoints/SUCCESSFUL CHECKPOINTS/gentle-gorge-166/epoch_17-0.3096422851085663.ckpt'}
 
     log_db_name = 'dcase24_workshop'
 
@@ -443,12 +422,18 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.sentence_embeddings = {}
 
         if self.kwargs['audio_features']['aggregate'] == 'TAP':
-            self.tap = TextAwareAttentionPooling(model_dim=self.kwargs['shared_representation_size'],
-                                                 query_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                 key_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                 value_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                 p_dropout_weights=self.kwargs['tap_hyperparams']['p_dropout_weights'],
-                                                 p_dropout_proj=self.kwargs['tap_hyperparams']['p_dropout_proj'])
+            self.text_aware_pooling = TextAwareAttentionPooling(model_dim=self.kwargs['shared_representation_size'],
+                                                                query_dim=self.kwargs['tap_hyperparams']['dim'],
+                                                                key_dim=self.kwargs['tap_hyperparams']['dim'],
+                                                                value_dim=self.kwargs['tap_hyperparams']['dim'],
+                                                                p_dropout_weights=self.kwargs['tap_hyperparams'][
+                                                                    'p_dropout_weights'],
+                                                                p_dropout_proj=self.kwargs['tap_hyperparams'][
+                                                                    'p_dropout_proj'])
+
+        self.sentence_transformer = SentenceTransformer("all-MiniLM-L6-v2")
+        for p in self.sentence_transformer.parameters():
+            p.requires_grad = False
 
         if len(self.kwargs.get('distill_from', "")):
             for pt_model in self.kwargs['distill_from'].split(";"):
@@ -456,7 +441,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                 if not os.path.exists(out_path):
                     continue
                 if not os.path.exists(
-                    os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt')):
+                        os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt')):
                     print("embeddings do not exist")
                     # cmd_generate_embeddings(model=None, load_parameters=pt_model)
                 se = torch.load(os.path.join(out_path, self.kwargs['train_on'] + '_sentence_embeddings_train.pt'))
@@ -476,39 +461,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if self.loss_function == 'Sigmoid Loss':
             self.sigmoid_loss = SigmoidLoss(init_t=self.kwargs['sigmoid_loss_args']['init_t'],
                                             init_b=self.kwargs['sigmoid_loss_args']['init_b'])
-
-        if self.loss_function == 'CLOOB':
-            init_inv_tau = self.kwargs['cloob_args']['init_inv_tau']
-            learnable_inv_tau = self.kwargs['cloob_args']['learnable_inv_tau']
-            self.logit_inv_tau = nn.Parameter(torch.ones([]) * np.log(init_inv_tau))
-            self.logit_inv_tau.requires_grad = learnable_inv_tau
-
-            self.hopfield_layer_train = Hopfield(input_size=self.kwargs['shared_representation_size'],
-                                                 scaling=self.kwargs['cloob_args']['scale-hopfield'],
-                                                 normalize_hopfield_space=False,
-                                                 normalize_hopfield_space_affine=False,
-                                                 normalize_pattern_projection=False,
-                                                 normalize_pattern_projection_affine=False,
-                                                 normalize_state_pattern=False,
-                                                 normalize_state_pattern_affine=False,
-                                                 normalize_stored_pattern=False,
-                                                 normalize_stored_pattern_affine=False,
-                                                 state_pattern_as_static=True,
-                                                 pattern_projection_as_static=True,
-                                                 stored_pattern_as_static=True,
-                                                 disable_out_projection=True,
-                                                 num_heads=1,
-                                                 dropout=False)
-
-            self.hopfield_layer_validate = self.hopfield_layer_train
-
-        if self.loss_function == 'SoftInfoNCE':
-            self.pretrained_model = AudioRetrievalModel.load_from_checkpoint(
-                self.kwargs['soft_info_nce_args']['pretrained_model_path']
-            )
-            self.pretrained_model.eval()
-            for param in self.pretrained_model.parameters():
-                param.requires_grad = False
 
     def forward_audio(self, batch, y=None, y_mask=None):
 
@@ -642,7 +594,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         batch['sentence_features'] = token_embeddings
         batch['sentence_features_mask'] = batch['attention_mask']
 
-        ### forward audio features
+        # forward audio features
         sentence_features = batch['sentence_features']
         sentence_features_mask = batch['sentence_features_mask']
         # first token or all tokens
@@ -671,53 +623,43 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         return batch
 
     def forward(self, batch):
-
-        ### forward audio
+        # forward audio
         batch = self.forward_audio(batch)
-
-        ### forward audio features
+        # forward sentence
         batch = self.forward_sentence(batch)
-
-        if self.kwargs['audio_features']['aggregate'] == 'TAP':
-            audio_given_context = self.tap(batch['audio_features'], batch['sentence_features'], self.training)
-            batch['audio_features'] = audio_given_context
-
-        elif self.loss_function == 'CLOOB':
-            return batch['audio_features'], batch['sentence_features'], batch['audio_features_mask'], batch[
-                'sentence_features_mask'], self.logit_inv_tau
 
         return batch['audio_features'], batch['sentence_features'], batch['audio_features_mask'], batch[
             'sentence_features_mask']
 
-    def rank_sequences(self, audio_features, audio_mask, sentence_features, sentence_mask):
+    def rank_sequences(self, audio_features, audio_mask, sentence_features, sentence_mask, C_empty=None):
+
+        if self.kwargs['audio_features']['aggregate'] == 'TAP':
+            if C_empty is not None:
+                C = C_empty
+            else:
+                C = torch.empty((sentence_features.size(0), audio_features.size(0))).to(self.device)
+            num_audios = C.shape[1]
+            for i in range(num_audios):
+                attn_mask = audio_mask[i:i + 1].bool().unsqueeze(0)
+                audio_conditioned = self.text_aware_pooling(audio_features[i:i + 1],
+                                                            sentence_features,
+                                                            self.training,
+                                                            attn_mask)
+                if self.kwargs['normalize']:
+                    audio_conditioned = torch.nn.functional.normalize(audio_conditioned, p=2, dim=-1)
+                    sentence_features = torch.nn.functional.normalize(sentence_features, p=2, dim=-1)
+                C[:, i:i + 1] = (audio_conditioned * sentence_features).sum(-1)
+            return C
 
         if self.kwargs['normalize']:
             sentence_features = torch.nn.functional.normalize(sentence_features, p=2, dim=-1)
             audio_features = torch.nn.functional.normalize(audio_features, p=2, dim=-1)
-
         C = audio_features.squeeze(1) @ sentence_features.squeeze(1).t()
         return C
 
     def training_step(self, batch, batch_idx):
         self.update_scalars(batch_idx)
-
-        if self.loss_function == 'CLOOB':
-            audio_features, sentence_features, audio_mask, sentence_mask, logit_inv_tau = self(batch)
-
-        else:
-            audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
-        if self.loss_function == 'SoftInfoNCE':
-            raw_audio = batch['audio']  # Shape: [B, samples]
-            raw_captions = batch['caption']
-            audio_length = batch['audio_length']
-            with torch.no_grad():
-                pretrained_batch = {
-                    'audio': raw_audio,
-                    'caption': raw_captions,
-                    'audio_length': audio_length
-                }
-                pretrained_audio, pretrained_text, *_ = self.pretrained_model(pretrained_batch)
-                C_pretrained = self.rank_sequences(pretrained_audio, None, pretrained_text, None)
+        audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
 
         paths = np.array([hash(p) for p in batch['path']])
 
@@ -752,34 +694,19 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             1], f'Audio Features Shape: {C_audio.shape} Sentence Features Shape: {C_text.shape}'
         assert C_text.shape[0] == C_text.shape[1]
 
-        if self.loss_function == 'TAP+PMR' or self.loss_function == 'PMR':
+        if self.loss_function == 'PMR':
             loss = self.prior_matrix_revisited_loss(C=C,
                                                     omega=self.kwargs['pmr_omega'],
                                                     tau=self.kwargs['pmr_tau'])
         elif self.loss_function == 'semi-negative':
             loss = self.semi_hard_triplet_ranking_loss(C)
         elif self.loss_function == 'InfoNCE':
-            target_sim = target_matrix_mix(paths=batch['path']).to(self.device)
-            loss = self.info_nce_loss(s=C, sim_targets=target_sim)
+            loss = self.info_nce_loss(C)
         elif self.loss_function == 'Sigmoid Loss':
             loss = self.sigmoid_loss(C)
-        elif self.loss_function == 'SoftInfoNCE':
-            loss = self.soft_info_nce_loss(C, C_pretrained,
-                                           self.kwargs['soft_info_nce_args']['weight_kl'],
-                                           self.kwargs['soft_info_nce_args']['weight_unif'],
-                                           self.kwargs['soft_info_nce_args']['t'])
-        elif self.loss_function == 'CLOOB':
-
-            if self.kwargs['normalize']:
-                sentence_features = torch.nn.functional.normalize(sentence_features, p=2, dim=-1)
-                audio_features = torch.nn.functional.normalize(audio_features, p=2, dim=-1)
-
-            loss = cloob(image_features=audio_features.squeeze(1),
-                         text_features=sentence_features.squeeze(1),
-                         inv_tau=self.logit_inv_tau,
-                         hopfield_layer=self.hopfield_layer_train)
-            torch.clamp(self.logit_inv_tau.data, 0, 4.6052)
-
+        elif self.loss_function == 'ListNet':
+            captions = batch['caption']
+            loss = ListNetLoss(self.sentence_transformer, C, captions)
         else:
             loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
 
@@ -788,8 +715,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if self.loss_function == 'Sigmoid Loss':
             self.log('train/sigmoid temperature', self.sigmoid_loss.t, sync_dist=True)
             self.log('train/sigmoid bias', self.sigmoid_loss.b, sync_dist=True)
-        if self.loss_function == 'CLOOB':
-            self.log('train/cloob inv tau', self.logit_inv_tau, sync_dist=True)
 
         loss = self.kwargs['loss_weight'] * loss
 
@@ -821,16 +746,20 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if dl_index == 1 and mode == 'val':
             mode = 'test'
         with torch.no_grad():
-            if self.loss_function == 'CLOOB':
-                audio_features, sentence_features, audio_mask, sentence_mask, logit_inv_tau = self(batch)
-            else:
-                audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
+            audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
 
+        if self.kwargs['audio_features']['aggregate'] == 'TAP':
+            audio_features = audio_features.detach().clone()
+            audio_mask = audio_mask.detach().clone()
+
+        else:
+            audio_features = audio_features[:, :2].detach().clone()
+            audio_mask = audio_mask[:, :2].detach().clone()
         args = {
-            'audio_features': copy.deepcopy(audio_features[:, :2].detach()),
-            'audio_mask': copy.deepcopy(audio_mask[:, :2].detach()),
-            'sentence_features': copy.deepcopy(sentence_features[:, :1].detach()),
-            'sentence_mask': copy.deepcopy(sentence_mask[:, :1].detach()),
+            'audio_features': audio_features,
+            'audio_mask': audio_mask,
+            'sentence_features': sentence_features[:, :1].detach().clone(),
+            'sentence_mask': sentence_mask[:, :1].detach().clone(),
             'keywords': batch['keywords'],
             'caption': batch['caption'],
             'path': batch['path'],
@@ -848,21 +777,9 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         html = list(itertools.chain(*[batch['html'] for batch in args]))
 
         I = torch.from_numpy((np.array(paths)[:, None] == np.array(paths)[None, :])).type(torch.bool)
+
         args = {k: torch.cat([batch[k] for batch in args], dim=0) for k in args[0] if
                 k in ['audio_features', 'sentence_features', 'audio_mask', 'sentence_mask', 'idx']}
-
-        if self.loss_function == 'SoftInfoNCE':
-            raw_audio = batch['audio']  # Shape: [B, samples]
-            raw_captions = batch['caption']
-            audio_length = batch['audio_length']
-            with torch.no_grad():
-                pretrained_batch = {
-                    'audio': raw_audio,
-                    'caption': raw_captions,
-                    'audio_length': audio_length
-                }
-                pretrained_audio, pretrained_text, *_ = self.pretrained_model(pretrained_batch)
-                C_pretrained = self.rank_sequences(pretrained_audio, None, pretrained_text, None)
 
         audio_features = args['audio_features']
         sentence_features = args['sentence_features']
@@ -883,7 +800,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             1], f'Audio Features Shape: {audio_features.shape} Sentence Features Shape: {sentence_features.shape}'
         assert C_text.shape[0] == C_text.shape[1]
 
-        if self.loss_function == 'TAP+PMR' or self.loss_function == 'PMR':
+        if self.loss_function == 'PMR':
             loss = self.prior_matrix_revisited_loss(C=C,
                                                     omega=self.kwargs['pmr_omega'],
                                                     tau=self.kwargs['pmr_omega'])
@@ -894,26 +811,14 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             loss = self.semi_hard_triplet_ranking_loss(C)
             loss_ = self.semi_hard_triplet_ranking_loss(C_)
         elif self.loss_function == 'InfoNCE':
-            target_sim = target_matrix_mix(paths=batch['path']).to(self.device)
-            loss = self.info_nce_loss(s=C, sim_targets=target_sim)
-            loss_ = self.info_nce_loss(s=C_, sim_targets=target_sim)
+            loss = self.info_nce_loss(C)
+            loss_ = self.info_nce_loss(C_)
         elif self.loss_function == 'Sigmoid Loss':
             loss = self.sigmoid_loss(C)
             loss_ = self.sigmoid_loss(C_)
-        elif self.loss_function == 'Soft InfoNCE':
-            loss = self.soft_info_nce_loss(C, C_pretrained,
-                                           self.kwargs['soft_info_nce_args']['weight_kl'],
-                                           self.kwargs['soft_info_nce_args']['weight_unif'],
-                                           self.kwargs['soft_info_nce_args']['t'])
-            loss_ = loss
-        elif self.loss_function == 'CLOOB':
-            sentence_features = torch.nn.functional.normalize(sentence_features, p=2, dim=-1)
-            audio_features = torch.nn.functional.normalize(audio_features, p=2, dim=-1)
-            loss = cloob(image_features=audio_features.squeeze(1),
-                         text_features=sentence_features.squeeze(1),
-                         inv_tau=self.logit_inv_tau,
-                         hopfield_layer=self.hopfield_layer_validate)
-            loss_ = loss
+        elif self.loss_function == 'ListNet':
+            loss = ListNetLoss(self.sentence_transformer, C, captions, 1)
+            loss_ = ListNetLoss(self.sentence_transformer, C_, captions)
         else:
             loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
             loss_ = -0.5 * (C_audio_[torch.where(I)].mean() + C_text_[torch.where(I)].mean())
@@ -995,20 +900,26 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         assert [v == n_captions[paths[0]] for k, v in n_captions.items()]
         n_captions = n_captions[paths[0]] if not self.kwargs['use_captions'] else 1
         print('compute global ranking')
+        all_audio_features = audio_features[::n_captions]
+        all_audio_masks = audio_mask[::n_captions]
         C = torch.empty((len(sentence_features), len(audio_features) // n_captions))
-        all_audio_features = torch.concatenate([audio_features[::n_captions]])
-        all_audio_masks = torch.concatenate([audio_mask[::n_captions]])
-        for i in range(len(all_audio_features)):
+        if self.kwargs['audio_features']['aggregate'] == 'TAP':
             with torch.cuda.amp.autocast(enabled=True):
-                C_ = self.rank_sequences(
-                    # self.tap(all_audio_features[i:i + 1], sentence_features[:])
-                    # if self.loss_function == 'TAP+PMR' else
-                    all_audio_features[i:i + 1],
-                    all_audio_masks[i:i + 1],
-                    sentence_features[:],
-                    sentence_mask[:]
-                )
-            C[:, i:i + 1] = C_.T
+                C = self.rank_sequences(all_audio_features,
+                                        audio_mask,
+                                        sentence_features,
+                                        sentence_mask,
+                                        C_empty=C)
+        else:
+            for i in range(len(all_audio_features)):
+                with torch.cuda.amp.autocast(enabled=True):
+                    C_ = self.rank_sequences(
+                        all_audio_features[i:i + 1],
+                        all_audio_masks[i:i + 1],
+                        sentence_features[:],
+                        sentence_mask[:]
+                    )
+                C[:, i:i + 1] = C_.T
 
         if self.trainer.is_global_zero and self.store_predictions:
             print(self.logger)
@@ -1065,16 +976,12 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         text_seq = []
 
         attention_pooling = []
-        # pmr_loss = []
 
         sigmoid_loss = []
 
-        cloob_tau = []
-
-        minibatch_maha = []
-
         for k, p in self.named_parameters():
-
+            if not p.requires_grad:
+                continue
             if 'audio_embedding' in k:
                 audio_encoder.append(p)
             elif 'sentence_embedding' in k or 'metadata_embedding_model' in k:
@@ -1085,19 +992,12 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             elif 'project_audio' in k or 'audio_output_projection' in k or 'posencode' in k or 'audio_sequence' in k or 'audio_token' in k:
                 audio_seq.append(p)
 
-            # elif 'pmr_loss' in k:
-            #     pmr_loss.append(p)
-
             elif 'tau' in k or 'timing_tau' in k:
                 audio_seq.append(p)
-            elif 'tap' in k:
+            elif 'text_aware_pooling' in k:
                 attention_pooling.append(p)
             elif 'sigmoid_loss' in k:
                 sigmoid_loss.append(p)
-            elif 'logit_inv_tau' in k:
-                cloob_tau.append(p)
-            elif 'L' in k:
-                minibatch_maha.append(p)
 
             else:
                 raise ValueError
@@ -1115,12 +1015,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if self.loss_function == 'Sigmoid Loss':
             param_groups.append({"params": sigmoid_loss[0], "lr": self.kwargs['lr_sigmoid_t']})
             param_groups.append({"params": sigmoid_loss[1], "lr": self.kwargs['lr_sigmoid_b']})
-
-        if self.loss_function == 'CLOOB':
-            param_groups.append({"params": cloob_tau, "lr": self.kwargs['lr_cloob']})
-
-        if self.loss_function == 'MinibatchMaha':
-            param_groups.append({"params": minibatch_maha, "lr": self.kwargs['lr_maha']})
 
         optimizer = get_optimizer(param_groups)
         return {
@@ -1174,40 +1068,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                 self.hparams.rampdown_stop,
                 self.hparams.max_epochs
             )
-        elif self.loss_function == 'CLOOB':
-            update_lr(
-                self.optimizers(use_pl_optimizer=False),
-                epoch,
-                [
-                    self.hparams.lr_audio_encoder,
-                    self.hparams.lr_sentence_encoder,
-                    self.hparams.lr_audio_project,
-                    self.hparams.lr_sentence_project,
-                    self.hparams.lr_cloob
-                ],
-                self.hparams.min_lr,
-                self.hparams.warmup_length,
-                self.hparams.rampdown_start,
-                self.hparams.rampdown_stop,
-                self.hparams.max_epochs
-            )
-        elif self.loss_function == 'MinibatchMaha':
-            update_lr(
-                self.optimizers(use_pl_optimizer=False),
-                epoch,
-                [
-                    self.hparams.lr_audio_encoder,
-                    self.hparams.lr_sentence_encoder,
-                    self.hparams.lr_audio_project,
-                    self.hparams.lr_sentence_project,
-                    self.hparams.lr_maha
-                ],
-                self.hparams.min_lr,
-                self.hparams.warmup_length,
-                self.hparams.rampdown_start,
-                self.hparams.rampdown_stop,
-                self.hparams.max_epochs
-            )
 
         else:
             update_lr(
@@ -1233,78 +1093,24 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         device = s.device
         N = s.shape[0]
-
-        # Anchor-positive scores for each pair (x_i, y_i)
-        # shape: (N,)
-        anchor_scores = torch.diag(s)  # S[i, i]
-
-        # ------------------------------------------------------
-        # 1) Find semi-hard negative TEXT for each row i
-        #    We want j != i that minimizes |S[i, j] - S[i, i]|.
-        # ------------------------------------------------------
-        # Compute the absolute difference from anchor (row-wise)
-        # shape: (N, N)
+        anchor_scores = torch.diag(s)
         diff_text = torch.abs(s - anchor_scores.unsqueeze(1))
-
-        # Exclude the diagonal so we don't pick j = i
         idx = torch.arange(N, device=device)
         diff_text[idx, idx] = float('inf')
-
-        # For each row i, find the index j that has minimal difference
-        # shape: (N,)
         j_indices = torch.argmin(diff_text, dim=1)
-
-        # ------------------------------------------------------
-        # 2) Find semi-hard negative AUDIO for each column i
-        #    We want k != i that minimizes |S[k, i] - S[i, i]|.
-        # ------------------------------------------------------
-        # Do the same but with columns.  Transpose S so that S[k, i]
-        # appears as row k in S.t() for column i.
         diff_audio = torch.abs(s.t() - anchor_scores.unsqueeze(1))
         diff_audio[idx, idx] = float('inf')
-
-        # shape: (N,)
         k_indices = torch.argmin(diff_audio, dim=1)
-
-        # ------------------------------------------------------
-        # 3) Gather the chosen negatives and compute the hinge losses
-        # ------------------------------------------------------
-        # Negative text: S[i, j_indices]
         s_ij = s[idx, j_indices]
-        # Negative audio: S[k_indices, i]
         s_ki = s[k_indices, idx]
-
-        # margin-based hinge
         loss_text = F.relu(s_ij - anchor_scores + margin)
         loss_audio = F.relu(s_ki - anchor_scores + margin)
-
-        # Sum them, then average over the batch
         loss_total = loss_text + loss_audio
         loss_avg = loss_total.mean()
         return loss_avg
 
     @staticmethod
     def prior_matrix_revisited_loss(C, omega: float, tau: float):
-        # """
-        # s: (B, B) similarity matrix, s[i,j] = sim(text_i, audio_j)
-        # """
-        # # Prior for text->audio: softmax over columns
-        # pr_t2a = F.softmax(omega * s, dim=1)
-        # # Prior for audio->text: softmax over rows
-        # pr_a2t = F.softmax(omega * s, dim=0)
-        #
-        # # text->audio branch
-        # sim_revised_t2a = (s * pr_t2a) / tau
-        # log_probs_t2a = F.log_softmax(sim_revised_t2a, dim=1)
-        # L_t2a = -log_probs_t2a.diagonal().mean()
-        #
-        # # audio->text branch
-        # sim_revised_a2t = (s * pr_a2t) / tau
-        # log_probs_a2t = F.log_softmax(sim_revised_a2t, dim=0)
-        # L_a2t = -log_probs_a2t.diagonal().mean()
-
-        # C_audio = torch.log_softmax(C, dim=0)
-        # C_text = torch.log_softmax(C, dim=1)
 
         prior_text = torch.softmax(omega * C, dim=1)
         prior_audio = torch.softmax(omega * C, dim=0)
@@ -1335,27 +1141,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         loss_atc = (loss_a2t + loss_t2a) / 2
         return loss_atc
 
-    @staticmethod
-    def soft_info_nce_loss(C, C_pretrained, weight_kl, weight_unif, t):
-        logits = C
-
-        labels = torch.ones(C.size(0))
-        loss_mask = labels.diag()
-
-        sim_neg = C_pretrained[loss_mask != 1].view(C_pretrained.size(0), -1)
-        weights = torch.nn.functional.softmax(sim_neg / t, dim=1)
-        alpha, beta = weight_kl, weight_unif
-        weights = torch.clip((beta - alpha * weights) / (beta - alpha / weights.size(1)), min=0.1)
-        weights = torch.cat([torch.ones((weights.size(0), 1), device=weights.device), weights], dim=1)
-        scores = torch.cat([logits[loss_mask == 1].unsqueeze(1), logits[loss_mask != 1].view(logits.size(0), -1)],
-                           dim=1)
-        maxes = torch.max(scores, 1, keepdim=True)[0]
-        x_exp = torch.exp(scores - maxes)
-        x_exp_sum = torch.sum(weights * x_exp, 1, keepdim=True)
-        probs = x_exp / x_exp_sum
-        loss = - torch.mean(torch.log(probs[:, 0] + 1e-15))
-        return loss
-
 
 class SigmoidLoss(torch.nn.Module):
     def __init__(self, init_t=1, init_b=-10):
@@ -1374,6 +1159,20 @@ class SigmoidLoss(torch.nn.Module):
 
         loss = -torch.sum(F.logsigmoid(labels * logits)) / logits.size(0)
         return loss
+
+
+def ListNetLoss(text_sim_model, C, captions, omega=0.05):
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    omega = torch.tensor(omega)
+    with torch.no_grad():
+        sentence_embeddings = text_sim_model.encode(captions)
+        text_similarities = text_sim_model.similarity(sentence_embeddings, sentence_embeddings)
+    C_target = 1 / (1 + torch.exp(2.73 - 4.58 * text_similarities))
+    C_target = C_target.float() / torch.abs(omega)
+    P_y = F.softmax(C_target, dim=-1)  # target distribution
+    log_P_s = F.log_softmax(C, dim=-1)  # predicted log distribution
+    loss = -(P_y.to(device) * log_P_s.to(device)).sum(dim=-1).mean()
+    return loss
 
 
 @audio_retrieval.capture
@@ -1659,29 +1458,26 @@ class PositionalEncoding(torch.nn.Module):
 class TextAwareAttentionPooling(torch.nn.Module):
     def __init__(self, model_dim, query_dim, key_dim, value_dim, p_dropout_weights, p_dropout_proj):
         super().__init__()
-
+        self.model_dim = model_dim
         self.p_dropout_weights = p_dropout_weights
         self.p_dropout_proj = p_dropout_proj
-
         self.w_q = nn.Linear(in_features=model_dim, out_features=query_dim)
         self.w_k = nn.Linear(in_features=model_dim, out_features=key_dim)
         self.w_v = nn.Linear(in_features=model_dim, out_features=value_dim)
-
         self.w_0 = nn.Linear(in_features=query_dim, out_features=model_dim)
-
         self.layer_norm = torch.nn.LayerNorm(normalized_shape=model_dim)
 
-    def forward(self, x_audio, x_text, is_training: bool):
+    def forward(self, x_audio, x_text, is_training: bool, audio_mask):
         q_t = self.w_q(self.layer_norm(x_text))  # [B, 1, query_dim]
-        k_a = self.w_k(self.layer_norm(x_audio))  # [B, T_audio, key_dim]
-        v_a = self.w_v(self.layer_norm(x_audio))  # [B, T_audio, value_dim]
-
+        k_a = self.w_k(self.layer_norm(x_audio))  # [1, T_audio, key_dim]
+        v_a = self.w_v(self.layer_norm(x_audio))  # [1, T_audio, value_dim]
         dot_product_attention = F.scaled_dot_product_attention(q_t, k_a, v_a,
-                                                               dropout_p=self.p_dropout_weights if is_training else 0)
+                                                               dropout_p=self.p_dropout_weights if is_training else 0,
+                                                               attn_mask=audio_mask)
         z = self.layer_norm(self.w_0(dot_product_attention))
         z = F.dropout(z, p=self.p_dropout_proj, training=is_training)
-
         return z
+
 
 if __name__ == '__main__':
     # set DDP=2 forks two processes to run on two GPUs
