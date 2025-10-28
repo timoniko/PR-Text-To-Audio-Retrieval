@@ -87,9 +87,7 @@ $$
 V_a = \mathrm{LN}(c_a^\top) W_v
 $$
 
-where **LN** denotes a layer normalization layer.  
-
----
+where **LN** denotes a layer normalization layer.
 
 Scaled dot-product attention is then applied from text to each relevant frame:
 
