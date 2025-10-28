@@ -5,7 +5,9 @@ The experiments focused on stage 1 training using Clotho dataset. All runs were 
 
 
 ## Setting up the environment
-To set up the environment, refer to [original repo](https://github.com/OptimusPrimus/salsa) and follow the instruction of the corresponding section,but with updated  ```environment.yaml``` file. 
+To set up the environment, refer to the [original repo](https://github.com/OptimusPrimus/salsa) and follow 'Setting up the environment' section, 
+but with the updated  ```environment.yml``` file. 
+The provided environment can be set up on Linux and on Windows using WSL.
 
 ## Baseline Run
 
