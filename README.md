@@ -1,13 +1,12 @@
 
 This repository builds upon [salsa](https://github.com/OptimusPrimus/salsa) [[1]](#1) repository and contains the implementation to run and reproduce the results of experiments
 from my Practical Work / [Bachelor Thesis](https://github.com/timoniko/PR-Text-To-Audio-Retrieval/blob/main/main-thesis.pdf). 
-The experiments focused on stage 1 training using Clotho dataset. All runs were conducted on a single NVIDIA RTX4090.
-
+The experiments focused on stage 1 training using Clotho dataset. 
 
 ## Setting up the environment
 To set up the environment, refer to the [original repo](https://github.com/OptimusPrimus/salsa) and follow 'Setting up the environment' section, 
 but with the updated  ```environment.yml``` file. 
-The provided environment can be set up on Linux and on Windows using WSL.
+The provided environment can be set up on Linux distribution only (i.e. WSL if using Windows)
 
 ## Baseline Run
 
