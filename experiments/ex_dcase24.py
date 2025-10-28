@@ -57,10 +57,6 @@ def default_config():
     "3: Sigmoid Loss"
     "4: InfoNCE"
 
-    tap_pmr_args = {'init_pmr_omega': 0.5,
-                    'init_pmr_tau': 0.07,
-                    'lr_tap': 2e-5}
-
     sigmoid_loss_args = {'lr_sigmoid_t': 1e-1,
                          'lr_sigmoid_b': 1e-1,
                          'init_t': 1,
@@ -133,10 +129,11 @@ def default_config():
 
     # attention pooling
     lr_tap = 2e-5
-    tap_hyperparams = {
+    tap_features = {
         'dim': 1024,
-        'p_dropout_weights': 0.1,
-        'p_dropout_proj': 0.1
+        'p_dropout_weights': 0,
+        'p_dropout_proj': 0,
+        'freeze_at_epoch': None
     }
 
     # optimizer
@@ -368,7 +365,6 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         initial_tau = torch.zeros((1,)) + self.kwargs['initial_tau']
         self.tau = torch.nn.Parameter(initial_tau, requires_grad=not self.kwargs['freeze_tau'])
-
         # assert audio_output_size == text_output_size
         if self.kwargs['audio_features']['sequence_model'].get('reduce_sequence', 0) > 0:
             n = self.kwargs['audio_features']['sequence_model']['reduce_sequence']
@@ -423,17 +419,20 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
 
         if self.kwargs['audio_features']['aggregate'] == 'TAP':
             self.text_aware_pooling = TextAwareAttentionPooling(model_dim=self.kwargs['shared_representation_size'],
-                                                                query_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                                key_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                                value_dim=self.kwargs['tap_hyperparams']['dim'],
-                                                                p_dropout_weights=self.kwargs['tap_hyperparams'][
+                                                                qkv_dim=self.kwargs['tap_features']['dim'],
+                                                                p_dropout_weights=self.kwargs['tap_features'][
                                                                     'p_dropout_weights'],
-                                                                p_dropout_proj=self.kwargs['tap_hyperparams'][
+                                                                p_dropout_proj=self.kwargs['tap_features'][
                                                                     'p_dropout_proj'])
+        else:
+            self.text_aware_pooling = None
 
-        self.sentence_transformer = SentenceTransformer("all-MiniLM-L6-v2")
-        for p in self.sentence_transformer.parameters():
-            p.requires_grad = False
+        if self.kwargs['loss_function'] == 'ListNet':
+            self.sentence_transformer = SentenceTransformer("sentence-transformers/all-mpnet-base-v2")
+            for p in self.sentence_transformer.parameters():
+                p.requires_grad = False
+        else:
+            self.sentence_transformer = None
 
         if len(self.kwargs.get('distill_from', "")):
             for pt_model in self.kwargs['distill_from'].split(";"):
@@ -558,6 +557,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
                                                               p=self.kwargs['projection_dropout'])
         batch['audio_features'] = self.project_audio(batch['audio_features'])
 
+
         return batch
 
     def forward_sentence(self, batch):
@@ -631,24 +631,21 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         return batch['audio_features'], batch['sentence_features'], batch['audio_features_mask'], batch[
             'sentence_features_mask']
 
-    def rank_sequences(self, audio_features, audio_mask, sentence_features, sentence_mask, C_empty=None):
+    def rank_sequences(self, audio_features, audio_mask, sentence_features, sentence_mask):
 
         if self.kwargs['audio_features']['aggregate'] == 'TAP':
-            if C_empty is not None:
-                C = C_empty
-            else:
-                C = torch.empty((sentence_features.size(0), audio_features.size(0))).to(self.device)
-            num_audios = C.shape[1]
-            for i in range(num_audios):
-                attn_mask = audio_mask[i:i + 1].bool().unsqueeze(0)
-                audio_conditioned = self.text_aware_pooling(audio_features[i:i + 1],
-                                                            sentence_features,
-                                                            self.training,
-                                                            attn_mask)
+            C = torch.empty((len(sentence_features), len(audio_features))).to(self.device)
+            for i in range(len(audio_features)):
+                audio_conditioned = self.text_aware_pooling(
+                    audio_features[i:i+1],
+                    sentence_features[:],
+                    audio_mask[i:i+1],
+                    self.training
+                )  # [B, 1, D]
                 if self.kwargs['normalize']:
                     audio_conditioned = torch.nn.functional.normalize(audio_conditioned, p=2, dim=-1)
                     sentence_features = torch.nn.functional.normalize(sentence_features, p=2, dim=-1)
-                C[:, i:i + 1] = (audio_conditioned * sentence_features).sum(-1)
+                C[:, i:i+1] = (sentence_features * audio_conditioned).sum(-1)
             return C
 
         if self.kwargs['normalize']:
@@ -658,6 +655,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         return C
 
     def training_step(self, batch, batch_idx):
+
         self.update_scalars(batch_idx)
         audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
 
@@ -685,6 +683,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             self.first = False
 
         C = self.rank_sequences(audio_features, audio_mask, sentence_features, sentence_mask)
+        C_unscaled = C
         with torch.cuda.amp.autocast(enabled=False):
             C = C.float() / torch.abs(self.tau.float())
             C_audio = F.log_softmax(C, dim=0)
@@ -706,7 +705,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             loss = self.sigmoid_loss(C)
         elif self.loss_function == 'ListNet':
             captions = batch['caption']
-            loss = ListNetLoss(self.sentence_transformer, C, captions)
+            loss = ListNetLoss(self.sentence_transformer, C_unscaled, captions)
         else:
             loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
 
@@ -747,14 +746,9 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             mode = 'test'
         with torch.no_grad():
             audio_features, sentence_features, audio_mask, sentence_mask = self(batch)
-
-        if self.kwargs['audio_features']['aggregate'] == 'TAP':
             audio_features = audio_features.detach().clone()
             audio_mask = audio_mask.detach().clone()
 
-        else:
-            audio_features = audio_features[:, :2].detach().clone()
-            audio_mask = audio_mask[:, :2].detach().clone()
         args = {
             'audio_features': audio_features,
             'audio_mask': audio_mask,
@@ -771,7 +765,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         if type(args) is not tuple:
             args = [args]
         mode = args[0]['mode']
-        paths = list(itertools.chain(*[batch['path'] for batch in args]))
+        paths = list(itertools.chain(*[batch['path'] for batcah in args]))
         captions = list(itertools.chain(*[batch['caption'] for batch in args]))
         keywords = list(itertools.chain(*[batch['keywords'] for batch in args]))
         html = list(itertools.chain(*[batch['html'] for batch in args]))
@@ -817,7 +811,7 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
             loss = self.sigmoid_loss(C)
             loss_ = self.sigmoid_loss(C_)
         elif self.loss_function == 'ListNet':
-            loss = ListNetLoss(self.sentence_transformer, C, captions, 1)
+            loss = ListNetLoss(self.sentence_transformer, C, captions)
             loss_ = ListNetLoss(self.sentence_transformer, C_, captions)
         else:
             loss = -0.5 * (C_audio[torch.where(I)].mean() + C_text[torch.where(I)].mean())
@@ -834,6 +828,15 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         self.validation_outputs.append(args)
 
     def on_validation_epoch_end(self, mode='val'):
+
+        if self.kwargs['audio_features']['aggregate'] == 'TAP':
+            freeze_tap_at_epoch = self.kwargs['tap_features']['freeze_at_epoch']
+            if freeze_tap_at_epoch:
+                if self.current_epoch == freeze_tap_at_epoch:
+                    for p in self.text_aware_pooling.parameters():
+                        p.requires_grad = False
+                    print(f'Froze TAP at epoch {self.current_epoch}')
+
         outputs = self.validation_outputs
         if len(outputs) == 0:
             return
@@ -903,13 +906,14 @@ class AudioRetrievalModel(pl.LightningModule, ABC):
         all_audio_features = audio_features[::n_captions]
         all_audio_masks = audio_mask[::n_captions]
         C = torch.empty((len(sentence_features), len(audio_features) // n_captions))
+        device = C.device
         if self.kwargs['audio_features']['aggregate'] == 'TAP':
             with torch.cuda.amp.autocast(enabled=True):
                 C = self.rank_sequences(all_audio_features,
-                                        audio_mask,
+                                        all_audio_masks,
                                         sentence_features,
-                                        sentence_mask,
-                                        C_empty=C)
+                                        sentence_mask)
+                C = C.to(device)
         else:
             for i in range(len(all_audio_features)):
                 with torch.cuda.amp.autocast(enabled=True):
@@ -1161,18 +1165,28 @@ class SigmoidLoss(torch.nn.Module):
         return loss
 
 
-def ListNetLoss(text_sim_model, C, captions, omega=0.05):
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    omega = torch.tensor(omega)
+def ListNetLoss(text_sim_model, C_unscaled, captions, tau=0.05, mode='audio_text'):
+    device = C_unscaled.device
     with torch.no_grad():
-        sentence_embeddings = text_sim_model.encode(captions)
-        text_similarities = text_sim_model.similarity(sentence_embeddings, sentence_embeddings)
-    C_target = 1 / (1 + torch.exp(2.73 - 4.58 * text_similarities))
-    C_target = C_target.float() / torch.abs(omega)
-    P_y = F.softmax(C_target, dim=-1)  # target distribution
-    log_P_s = F.log_softmax(C, dim=-1)  # predicted log distribution
-    loss = -(P_y.to(device) * log_P_s.to(device)).sum(dim=-1).mean()
-    return loss
+        sent_emb = text_sim_model.encode(captions)
+        text_sim = text_sim_model.similarity(sent_emb, sent_emb)
+        C_target = 1 / (1 + torch.exp(2.73 - 4.58 * text_sim)).to(device)
+
+    # Audio-to-Text (ListNet text)
+    P_t = F.softmax(C_target / tau, dim=1)
+    logQ_t = F.log_softmax(C_unscaled / tau, dim=1)
+    loss_t = -(P_t * logQ_t).sum(dim=1).mean()
+
+    # Text-to-Audio (ListNet audio)
+    P_a = F.softmax(C_target / tau, dim=0)
+    logQ_a = F.log_softmax(C_unscaled / tau, dim=0)
+    loss_a = -(P_a * logQ_a).sum(dim=0).mean()
+
+    if mode == 'text':
+        return loss_t
+    if mode == 'audio':
+        return loss_a
+    return (loss_t + loss_a) / 2
 
 
 @audio_retrieval.capture
@@ -1456,25 +1470,27 @@ class PositionalEncoding(torch.nn.Module):
 
 
 class TextAwareAttentionPooling(torch.nn.Module):
-    def __init__(self, model_dim, query_dim, key_dim, value_dim, p_dropout_weights, p_dropout_proj):
+    def __init__(self, model_dim, qkv_dim, p_dropout_weights, p_dropout_proj):
         super().__init__()
         self.model_dim = model_dim
         self.p_dropout_weights = p_dropout_weights
         self.p_dropout_proj = p_dropout_proj
-        self.w_q = nn.Linear(in_features=model_dim, out_features=query_dim)
-        self.w_k = nn.Linear(in_features=model_dim, out_features=key_dim)
-        self.w_v = nn.Linear(in_features=model_dim, out_features=value_dim)
-        self.w_0 = nn.Linear(in_features=query_dim, out_features=model_dim)
+        self.w_q = nn.Linear(in_features=model_dim, out_features=qkv_dim)
+        self.w_k = nn.Linear(in_features=model_dim, out_features=qkv_dim)
+        self.w_v = nn.Linear(in_features=model_dim, out_features=qkv_dim)
+        self.w_0 = nn.Linear(in_features=qkv_dim, out_features=model_dim)
         self.layer_norm = torch.nn.LayerNorm(normalized_shape=model_dim)
 
-    def forward(self, x_audio, x_text, is_training: bool, audio_mask):
+    def forward(self, x_audio, x_text, audio_mask, is_training: bool):
         q_t = self.w_q(self.layer_norm(x_text))  # [B, 1, query_dim]
         k_a = self.w_k(self.layer_norm(x_audio))  # [1, T_audio, key_dim]
         v_a = self.w_v(self.layer_norm(x_audio))  # [1, T_audio, value_dim]
+
         dot_product_attention = F.scaled_dot_product_attention(q_t, k_a, v_a,
                                                                dropout_p=self.p_dropout_weights if is_training else 0,
-                                                               attn_mask=audio_mask)
+                                                               attn_mask=audio_mask == 1)
         z = self.layer_norm(self.w_0(dot_product_attention))
+
         z = F.dropout(z, p=self.p_dropout_proj, training=is_training)
         return z
 

@@ -20,7 +20,8 @@ def config():
 def get_train_data_loader(data_set, batch_size, n_workers, queue_random_sampling, targets=None, collate_fun=None, shuffle=True):
 
     if targets is None:
-        return DataLoader(data_set, batch_size=batch_size, num_workers=n_workers, shuffle=shuffle, collate_fn=collate_fun, drop_last=True)
+        return DataLoader(data_set, batch_size=batch_size, num_workers=n_workers, shuffle=shuffle,
+                          collate_fn=collate_fun)
     else:
         if queue_random_sampling:
             sampler = CustomQueueRandomSampler(targets=targets)
@@ -38,7 +39,8 @@ def get_eval_data_loader(data_set, batch_size_eval, n_workers, collate_fun=None,
         sampler = torch.utils.data.DistributedSampler(data_set, shuffle=shuffle, num_replicas=num_replicas, rank=rank)
         return DataLoader(data_set, batch_size=batch_size_eval, num_workers=n_workers, sampler=sampler
                           , collate_fn=collate_fun)
-    return DataLoader(data_set, batch_size=batch_size_eval, num_workers=n_workers, shuffle=shuffle, collate_fn=collate_fun)
+    return DataLoader(data_set, batch_size=batch_size_eval, num_workers=n_workers, shuffle=shuffle,
+                      collate_fn=collate_fun)
 
 
 class CustomQueueRandomSampler(Sampler):

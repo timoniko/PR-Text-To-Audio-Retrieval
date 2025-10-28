@@ -1,6 +1,7 @@
 import os
 import torch
 from models.audio.external.atst.audio_transformer import FrameASTModel
+import torchaudio.transforms as T
 
 from torchaudio.transforms import AmplitudeToDB, MelSpectrogram
 from models.audio.external.atst.frequency_warping import RandomResizeCrop
@@ -79,6 +80,7 @@ class ATSTWrapper(torch.nn.Module):
         )
         # atst_x = atst_x.transpose(1, 2)
         return atst_x[:, None, :, :]
+
 
     def load_atst(self, path=None):
         if path is None:

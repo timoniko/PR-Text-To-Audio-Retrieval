@@ -15,6 +15,7 @@ N_CLASSES = 527
 
 cached_audiosets = None
 
+
 @audioset.config
 def config():
     # dirs
@@ -91,8 +92,6 @@ class AudioSetDataset(DatasetBaseClass):
             file_path = os.path.join(self.metadata_dir, 'eval_segments.csv')
             self.append_csv_to_lists(file_path)
 
-
-
     def get_updated_csv_rows(self, file_path, part):
         cleaned_csv_file = file_path[:-4] + '_cleaned.csv'
 
@@ -153,7 +152,7 @@ class AudioSetDataset(DatasetBaseClass):
             'audio': audio['audio'],
             'audio_length': audio['audio_length'],
             'ytid': self.ytids[item],
-            'target': self.targets[item].copy() # copy, just to be save ...
+            'target': self.targets[item].copy()  # copy, just to be save ...
         }
 
     def __str__(self):
@@ -164,6 +163,7 @@ if __name__ == '__main__':
     from sacred import Experiment
 
     ex = Experiment('test', ingredients=[audioset])
+
 
     @ex.main
     def main_():
@@ -187,5 +187,6 @@ if __name__ == '__main__':
 
         class_labels = get_class_labels_ids()
         print(ds)
+
 
     ex.run()

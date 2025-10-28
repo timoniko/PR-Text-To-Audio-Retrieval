@@ -36,7 +36,6 @@ def get_clotho_v2(split, folder_name, compress, add_mixed_audios,
 
 
 class Clotho_v2Dataset(DatasetBaseClass):
-
     @clotho_v2.capture
     def __init__(self, split, folder_name, compress, add_hard_negatives, add_hard_negatives_gpt,
                  add_phi4_captions, add_gpt4_captions, augment_waveform, ablate_while=False):
