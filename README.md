@@ -27,9 +27,9 @@ seed=123
 ```
 The expected performance is: 
 
-| map@10 |  R@1  |  R@5  |  R@10  |
-|:------:|:-----:|:-----:|:------:|
-| 27.685 | 41.78 | 44.93 | 56.612 |
+| map@10 |  R@1   |  R@5  |  R@10  |
+|:------:|:------:|:-----:|:------:|
+| 27.685 | 16.861 | 41.78 | 56.612 |
 
 
 To improve performance, simply reduce the ATST leaning rate:
