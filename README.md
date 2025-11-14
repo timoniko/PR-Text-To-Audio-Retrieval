@@ -1,6 +1,6 @@
 
 This repository builds upon [salsa](https://github.com/OptimusPrimus/salsa) [[1]](#1) repository and contains the implementation to run and reproduce the results of experiments
-from my Practical Work / [Bachelor Thesis](https://github.com/timoniko/PR-Text-To-Audio-Retrieval/blob/main/main-thesis.pdf). 
+from my Practical Work / [Bachelor Thesis](https://github.com/timoniko/PR-Text-To-Audio-Retrieval/blob/main/ba-thesis-final.pdf). 
 The experiments focused on stage 1 training using Clotho dataset. 
 
 ## Setting up the environment
